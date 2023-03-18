@@ -26,8 +26,31 @@ rna_tower_model = tf.keras.Model(inputs=rna_tower_input, outputs=rna_tower_outpu
 # Concatenate the outputs of the two towers
 merged = tf.keras.layers.Concatenate()([protein_tower_output, rna_tower_output])
 
+# Add a basic Dot-Product Attention layer (Global Attention)
+query_value_attention_seq = tf.keras.layers.Attention(use_scale=True)([merged, merged])
+
+# Add a 1D convolutional layer (Local Attention)
+conv1d_output = tf.keras.layers.Conv1D(filters=64, kernel_size=3, padding='same', activation='relu')(merged)
+
+# Concatenate the global and local attention features
+combined_attention = tf.keras.layers.Concatenate()([query_value_attention_seq, conv1d_output])
+
+# Add a linear layer to combine the global and local attention outputs
+linear_output = tf.keras.layers.Dense(units=merged.shape[-1], use_bias=True)(combined_attention)
+
+# Apply ReLU activation function
+hybrid_attention_output = tf.keras.layers.ReLU()(linear_output)
+
+# Add a global average pooling layer
+pooled_output = tf.keras.layers.GlobalAveragePooling1D()(hybrid_attention_output)
+
 # Add a final dense layer with a sigmoid activation function to predict RNA-protein interactions
-predictions = tf.keras.layers.Dense(1, activation='sigmoid')(merged)
+predictions = tf.keras.layers.Dense(1, activation='sigmoid')(pooled_output)
+
+# Rest of the code remains unchanged
+
+
+
 
 # Define the positive and negative samples
 def contrastive_samples(embeddings, labels):
