@@ -1,0 +1,86 @@
+import tensorflow as tf
+from transformers import TFBertModel
+from tensorflow.keras.losses import BinaryCrossentropy
+
+# Load the pre-trained models
+protbert = TFBertModel.from_pretrained('Rostlab/prot_bert_bfd')
+rna_bert = TFBertModel.from_pretrained('TJU-AI/rna-bert-base')
+
+# Freeze the weights of the pre-trained models
+protbert.trainable = False
+rna_bert.trainable = False
+
+# Define the input shapes for the two towers
+protein_input_shape = (512,)  # assuming protein representation has 512 features
+rna_input_shape = (512,)  # assuming RNA representation has 512 features
+
+# Define the two towers
+protein_tower_input = tf.keras.layers.Input(shape=protein_input_shape, dtype='int32', name='protein_input')
+protein_tower_output = protbert(protein_tower_input)[1]
+protein_tower_model = tf.keras.Model(inputs=protein_tower_input, outputs=protein_tower_output)
+
+rna_tower_input = tf.keras.layers.Input(shape=rna_input_shape, dtype='int32', name='rna_input')
+rna_tower_output = rna_bert(rna_tower_input)[1]
+rna_tower_model = tf.keras.Model(inputs=rna_tower_input, outputs=rna_tower_output)
+
+# Concatenate the outputs of the two towers
+merged = tf.keras.layers.Concatenate()([protein_tower_output, rna_tower_output])
+
+# Add a final dense layer with a sigmoid activation function to predict RNA-protein interactions
+predictions = tf.keras.layers.Dense(1, activation='sigmoid')(merged)
+
+# Define the positive and negative samples
+def contrastive_samples(embeddings, labels):
+    # Gather the indices of positive and negative samples
+    positive_indices = tf.where(tf.equal(labels, 1))
+    negative_indices = tf.where(tf.equal(labels, 0))
+
+    # Gather the positive and negative samples
+    positive_samples = tf.gather_nd(embeddings, positive_indices)
+    negative_samples = tf.gather_nd(embeddings, negative_indices)
+
+    # Reshape the positive and negative samples
+    positive_samples = tf.reshape(positive_samples, (-1, 1, positive_samples.shape[-1]))
+    negative_samples = tf.reshape(negative_samples, (1, -1, negative_samples.shape[-1]))
+
+    # Concatenate the positive and negative samples
+    samples = tf.concat([positive_samples, negative_samples], axis=1)
+
+    # Create the labels for the samples (1 for positive, 0 for negative)
+    labels = tf.concat([tf.ones((positive_samples.shape[0], 1)), tf.zeros((negative_samples.shape[1], 1))], axis=0)
+
+    return samples, labels
+
+# Define the supervised contrastive learning loss
+def contrastive_loss(embeddings, labels):
+    samples, labels = contrastive_samples(embeddings, labels)
+    similarities = tf.matmul(samples, samples, transpose_b=True)
+    similarities /= tf.math.reduce_sum(samples ** 2, axis=-1, keepdims=True)
+    similarities /= tf.math.reduce_sum(samples ** 2, axis=-1, keepdims=True)
+
+    # Calculate the contrastive loss
+    contrastive_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=similarities))
+
+    return contrastive_loss
+
+#Define the binary cross-entropy loss
+bce_loss = BinaryCrossentropy()
+
+#Define the combined loss function
+def total_loss(y_true, y_pred, alpha=1.0, beta=1.0):
+bce = bce_loss(y_true, y_pred)
+contrastive = contrastive_loss(merged, y_true)
+return alpha * bce + beta * contrastive
+
+#Create the final model
+model = tf.keras.Model(inputs=[protein_tower_input, rna_tower_input], outputs=predictions)
+
+#Compile the model with the combined loss function
+model.compile(optimizer='adam', loss=lambda y_true, y_pred: total_loss(y_true, y_pred, alpha=1.0, beta=0.1), metrics=['accuracy'])
+
+#Train the model
+
+protein_sequences = ...
+rna_sequences = ...
+labels = ...
+model.fit([protein_sequences, rna_sequences], labels, batch_size=32, epochs=10, validation_split=0.1)
